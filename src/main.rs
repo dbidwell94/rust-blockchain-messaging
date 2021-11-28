@@ -158,7 +158,8 @@ impl Message {
             }
         }
 
-        print!("{:?}", built_string);
+        self.signing_key = None;
+        self.text = built_string;
     }
 }
 
@@ -338,17 +339,30 @@ fn get_private_key() -> Result<RsaPrivateKey, std::io::Error> {
     return Ok(private_key);
 }
 
-fn main() {
-    let (private_key, public_key) = get_keys();
+fn main() {}
 
-    let mut message: Message = Message::new(
-        &public_key,
-        &public_key,
-        "Testing123 oh won't you just test this!!??",
-    );
-    message
-        .encrypt(&public_key)
-        .expect("Unable to encrypt message");
+#[cfg(test)]
+mod tests {
+    use crate::{get_keys, Message};
 
-    message.decrypt(&private_key);
+    #[test]
+    fn message_decryption_works() {
+        let (private_key, public_key) = get_keys();
+
+        let test_text = "Testing123";
+
+        let mut message: Message = Message::new(&public_key, &public_key, &test_text);
+
+        assert_eq!(&test_text, &message.text);
+
+        message
+            .encrypt(&public_key)
+            .expect("Unable to encrypt message");
+
+        assert_ne!(&message.text, &test_text);
+
+        message.decrypt(&private_key);
+
+        assert_eq!(&test_text, &message.text);
+    }
 }
