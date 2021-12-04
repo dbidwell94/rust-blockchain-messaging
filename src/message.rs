@@ -15,6 +15,7 @@ use aes::{
 use hex::{decode as hex_decode, encode as hex_encode};
 use rand::rngs::OsRng;
 use rsa::{pkcs1::ToRsaPublicKey, PaddingScheme, PublicKey, RsaPrivateKey, RsaPublicKey};
+use serde::{Deserialize, Serialize};
 
 pub trait RsaPublicHelpers {
     fn print_key(&self) -> String;
@@ -32,18 +33,19 @@ impl RsaPublicHelpers for RsaPublicKey {
 
 type U16 = UInt<UInt<UInt<UInt<UInt<UTerm, B1>, B0>, B0>, B0>, B0>;
 
+#[derive(Serialize, Deserialize)]
 pub struct Message {
-    pub to: RsaPublicKey,
-    pub from: RsaPublicKey,
+    pub to: String,
+    pub from: String,
     pub text: String,
     pub signing_key: Option<String>,
 }
 
 impl Message {
-    pub fn new(to: &RsaPublicKey, from: &RsaPublicKey, text: &str) -> Message {
+    pub fn new(to: &RsaPublicKey, from: &RsaPublicKey, text: &str) -> Self {
         Message {
-            to: to.to_owned(),
-            from: from.to_owned(),
+            to: hex::encode(to.print_key()),
+            from: hex::encode(from.print_key()),
             text: String::from(text),
             signing_key: None,
         }
@@ -163,8 +165,8 @@ impl ToString for Message {
     fn to_string(&self) -> String {
         format!(
             "to:\n{}\nfrom:\n{}\ntext:\n{}\n\nsigning_key:\n{:?}",
-            self.to.print_key(),
-            self.from.print_key(),
+            self.to,
+            self.from,
             self.text,
             match &self.signing_key {
                 Some(key) => key,

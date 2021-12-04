@@ -1,18 +1,14 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     fmt::Debug,
     net::SocketAddr,
-    path::{Path, PathBuf},
+    path::Path,
     sync::{Arc, Mutex},
-    thread::sleep,
-    time::Duration,
 };
 
-use crate::{utils, Block, Message, Network};
+use crate::{utils::get_keys, Block, Message, Network};
 
 const CHAIN_STORAGE_LOCATION: &str = "./chain";
-const MAX_CHAIN_CHUNK: usize = 1024 * 10;
-const BLOCK_PADDING: [u8; 4] = [0x0, 0x0, 0x0, 0x0];
 
 pub enum ChainError {
     InvalidBlock,
@@ -35,6 +31,7 @@ pub struct Chain<'a> {
     chain_directory: &'a Path,
     chain: HashMap<String, Block>,
     latest_block_hash: Option<String>,
+    latest_block_id: u32,
 }
 
 impl<'a> Chain<'a> {
@@ -55,12 +52,14 @@ impl<'a> Chain<'a> {
             chain_directory: p,
             chain: HashMap::new(),
             latest_block_hash: None,
+            latest_block_id: 0,
         })
     }
 
     fn verify_chain(&self, block: &Block) -> bool {
         let mut current_block_option = Some(block);
         let mut is_valid_chain = true;
+        let mut counted_blocks: u32 = 0;
 
         while current_block_option.is_some() && is_valid_chain {
             let current_block = current_block_option.unwrap();
@@ -68,19 +67,21 @@ impl<'a> Chain<'a> {
                 return false;
             }
 
-            match current_block.previous_hash {
+            match &current_block.previous_hash {
                 None => {
                     if current_block.node_id != 0 {
                         return false;
                     }
                     return is_valid_chain;
                 }
-                Some(ref hash) => {
-                    let previous_block = self.chain.get(hash.as_str());
+                Some(hash) => {
+                    let previous_block = self.chain.get(hash);
 
                     match previous_block {
                         None => {
-                            if current_block.node_id != 0 {
+                            if current_block.node_id != 0
+                                && counted_blocks != self.chain.len() as u32
+                            {
                                 is_valid_chain = false;
                             }
                             current_block_option = None
@@ -89,6 +90,7 @@ impl<'a> Chain<'a> {
                     }
                 }
             };
+            counted_blocks += 1;
         }
 
         return is_valid_chain;
@@ -100,49 +102,137 @@ impl<'a> Chain<'a> {
         }
 
         let block_hash = String::from(&block.hash);
+        let block_id = block.node_id.to_owned();
+
+        if self.chain.len() >= 50 {
+            self.save_chain().unwrap();
+        }
 
         self.chain.insert(block_hash.to_owned(), block);
+
+        println!(
+            "New block added with id {:?} and hash {:?} -- new chain size: {:?} bytes",
+            block_id,
+            block_hash,
+            std::mem::size_of::<HashMap<String, Block>>() * self.chain.len()
+        );
+
         self.latest_block_hash = Some(block_hash);
+        self.latest_block_id = block_id;
+
         return Ok(());
     }
 
     pub fn init(&mut self) {
-        let (_, public) = utils::get_keys();
-        
+        let (_, public) = get_keys();
+        let mut block: Option<Block>;
+
         loop {
-            sleep(Duration::from_millis(1500));
-
-            let message = Message::new(&public, &public, "testing123");
-
-            let mut block = Block::new(
-                message,
-                &public,
-                self.latest_block_hash.to_owned(),
-                self.chain.len() as u32,
-            );
-
-            block.finalize();
-            let block_hash = block.hash.to_owned();
-            match self.add_block(block) {
-                Ok(_) => {
-                    println!("Block successfully added with hash: {:?}", block_hash);
+            let mut message = Message::new(&public, &public, "testing");
+            message.encrypt(&public).unwrap();
+            match &self.latest_block_hash {
+                Some(hash) => match self.chain.get(hash) {
+                    Some(b) => {
+                        block = Some(Block::new(
+                            message,
+                            &public,
+                            Some(b.hash.to_owned()),
+                            self.latest_block_id + 1,
+                        ));
+                    }
+                    None => block = None,
+                },
+                None => {
+                    block = Some(Block::new(message, &public, None, self.latest_block_id));
                 }
-                Err(err) => {
-                    println!("{:?}", err)
-                }
+            }
+
+            if block.is_some() {
+                let mut to_finalize = block.unwrap();
+                to_finalize.finalize();
+                self.add_block(to_finalize).unwrap();
             }
         }
     }
 
-    async fn save_chain(&self) -> Result<(), ChainError> {
+    fn get_min_max_block_id(&self) -> Option<(u32, u32)> {
+        let mut last_id: Option<u32> = None;
+        let first_id: Option<u32>;
+        let mut current_block: Option<&Block>;
+
+        match &self.latest_block_hash {
+            Some(hash) => match self.chain.get(hash) {
+                Some(block) => {
+                    first_id = Some(block.node_id.to_owned());
+                    current_block = Some(block);
+                }
+                None => return None,
+            },
+            None => return None,
+        };
+
+        while current_block.is_some() {
+            let block: &Block = current_block.unwrap();
+            match &block.previous_hash {
+                Some(hash) => match self.chain.get(hash) {
+                    Some(block) => {
+                        current_block = Some(block);
+                    }
+                    None => {
+                        current_block = None;
+                        last_id = Some(block.node_id.to_owned())
+                    }
+                },
+                None => {
+                    last_id = Some(block.node_id.to_owned());
+                    current_block = None
+                }
+            }
+        }
+
+        if first_id.is_none() || last_id.is_none() {
+            return None;
+        }
+
+        return Some((last_id.unwrap(), first_id.unwrap()));
+    }
+
+    fn save_chain(&mut self) -> Result<(), ChainError> {
         match std::fs::canonicalize(self.chain_directory) {
             Ok(buff) => {
-                println!("Saving blockchain to {:?}", buff.as_os_str());
+                let min_block_id: u32;
+                let max_block_id: u32;
 
-                let save_buffer: [u8; MAX_CHAIN_CHUNK] = [0u8; MAX_CHAIN_CHUNK];
-                let buffer_write_amount: usize = 0;
+                match self.get_min_max_block_id() {
+                    Some((min, max)) => {
+                        min_block_id = min;
+                        max_block_id = max;
+                    }
+                    None => return Err(ChainError::InvalidChain),
+                }
 
-                return Ok(());
+                let chain_name = buff.join(Path::new(&format!(
+                    "chain-{}-{}.chain.part",
+                    min_block_id, max_block_id
+                )));
+
+                println!("Saving blockchain to {:?}", chain_name.as_os_str());
+
+                let byte_vec: Vec<u8> = bincode::serialize(&self.chain).unwrap();
+                // for block in self.chain.values() {
+                //     byte_vec.append(&mut block.print_block());
+                //     for byte in BLOCK_PADDING {
+                //         byte_vec.push(byte);
+                //     }
+                // }
+
+                match std::fs::write(chain_name, &byte_vec[..]) {
+                    Ok(_) => {
+                        self.chain = HashMap::new();
+                        return Ok(());
+                    }
+                    Err(_) => return Err(ChainError::SaveError),
+                }
             }
             Err(_) => return Err(ChainError::SaveError),
         }
