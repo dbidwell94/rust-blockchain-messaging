@@ -10,20 +10,11 @@ use crate::{utils::get_keys, Block, Message, Network};
 
 const CHAIN_STORAGE_LOCATION: &str = "./chain";
 
+#[derive(Debug)]
 pub enum ChainError {
     InvalidBlock,
     InvalidChain,
     SaveError,
-}
-
-impl Debug for ChainError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::InvalidBlock => write!(f, "InvalidBlock"),
-            Self::InvalidChain => write!(f, "InvalidChain"),
-            Self::SaveError => write!(f, "SaveError"),
-        }
-    }
 }
 
 pub struct Chain<'a> {
